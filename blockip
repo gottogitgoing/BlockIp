@@ -1,0 +1,193 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# blockip - Blocks an ip address using iptables.
+
+# Copyright 2020, Peter,,, <frogsinspace@gmail.com>
+# All rights reserved.
+
+# Usage: blockip [-h|--help] [-b|--block ipaddress] [-u|--unblock ipaddress]
+#                [-s|--show] [-a|--all] [-f|--file file]
+
+# Revision history:
+# 2020-06-12 Created by new_script ver. 3.3
+# ---------------------------------------------------------------------------
+
+############ GLOBAL VARIABLES ###############
+PROGNAME=${0##*/}
+VERSION="0.1"
+IPT=/sbin/iptables
+COMMENT='Blocked-by-blockip'
+############ END GLOBAL VARIABLES ###########
+# Function to block an ip address.
+block_ip () {
+        RULES=$(( $(iptables -L | grep Blocked | wc -l) / 4 ))
+        if (( $RULES < 10 )); then
+                $IPT -I INPUT -s $1 -m comment --comment $COMMENT -j DROP
+                $IPT -I FORWARD -s 0\/0 -d $1 -m comment --comment $COMMENT -j DROP
+                $IPT -I FORWARD -s $1 -d 0\/0 -m comment --comment $COMMENT -j DROP
+                $IPT -I OUTPUT -d $1 -m comment --comment $COMMENT -j DROP
+        else
+                error_exit "10 rule maximum reached."
+        fi
+}
+# Function to unblock an ip address. 
+unblock_ip () {
+        $IPT -D INPUT -s $1 -m comment --comment $COMMENT -j DROP 2>/dev/null
+        $IPT -D FORWARD -s 0\/0 -d $1 -m comment --comment $COMMENT -j DROP 2>/dev/null
+        $IPT -D FORWARD -s $1 -d 0\/0 -m comment --comment $COMMENT -j DROP 2>/dev/null
+        $IPT -D OUTPUT -d $1 -m comment --comment $COMMENT -j DROP 2>/dev/null
+        if [ $? -gt 0 ]; then
+                error_exit "Iptables error: a rule for the ip address $1 does not exist."
+        fi
+}
+
+clean_up() { # Perform pre-exit housekeeping
+        return
+}
+
+error_exit() {
+        echo -e "${PROGNAME}: ${1:-"Unknown Error"}" >&2
+        clean_up
+        exit 1
+}
+
+graceful_exit() {
+        clean_up
+        exit
+}
+
+signal_exit() { # Handle trapped signals
+        case $1 in
+                INT)
+                        error_exit "Program interrupted by user" ;;
+                TERM)
+                        echo -e "\n$PROGNAME: Program terminated" >&2
+                        graceful_exit ;;
+                *)
+                        error_exit "$PROGNAME: Terminating on unknown signal" ;;
+        esac
+}
+
+usage() {
+        echo "  Usage: $PROGNAME [-h|--help] [-b|--block (ipaddress|ipaddress/CIDR)] [-u|--unblock ipaddress]"
+        echo -e "                 [-s|--show] [-a|--all] [-f|--file file]"
+}
+
+help_message() {
+        cat <<- _EOF_
+  $PROGNAME ver. $VERSION
+  Blocks an ip address using iptables.
+
+$(usage)
+
+  Options:
+  -a, --all                 Will unblock all ip addresses currently blocked by this script.
+  -s, --show                Display the currently blocked ip address, or addresses by this script.
+  -h, --help                Display this help message and exit.
+  -b, --block ipaddress     Will block an ip address, addresses, and a range if a CIDR is given.
+                            Where 'ipaddress' is the ip address, or ip addresses each seperated
+                            by a space to be blocked.
+  -u, --unblock ipaddress   Unblocks an ip address. Where 'ipaddress' is the ip address
+                            or list of ip addresses to be unblocked.
+  -f, --file file           Block ip addresses seperated by a new line in 'file'.
+
+  Note:
+      -Use this script with care; blocking a CIDR range over ssh can lead to a
+       server being rendered unreachable.
+      -Blocked ip addresses are not persistant accross reboots.
+      -A limit of ten ip addresses can be blocked on the fly. For blocking large 
+       numbers of ip's consider using the companion programme to iptables 'ipset'.
+      -ip addresses blocked using this script on a local machine can be by-passed
+       using a web proxy such as squid.
+
+_EOF_
+return
+}
+
+check_ip() {
+        # Check for a valid ip address.
+        REGEX1='((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?$)'
+        REGEX2='(((25[0-5]|2[0-4][0-9]|1?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9][0-9]?))(\/([8-9]|[1-2][0-9]|3[0-2]))([^0-9.]|$)'
+
+        if [[ $1 =~ $REGEX1 ]] || [[ $1 =~ $REGEX2 ]]; then
+                :
+        else
+                echo "$1 is not a valid ip address."
+                exit 1
+        fi
+}
+
+# Trap signals
+trap "signal_exit TERM" TERM HUP
+trap "signal_exit INT"  INT
+
+check_root() {
+        #....
+        # Make sure only root can run the script.
+        if [ "$(id -u)" != "0" ]; then
+                echo
+                echo "     !!-This script must be run as root-!!"
+                echo
+                echo "             ie. sudo $1 ..."
+                echo
+                exit 1
+        fi
+        #....
+}
+
+check_root $PROGNAME
+
+# Parse command-line
+while [[ -n $1 ]]; do
+        case $1 in
+                -h | --help)
+                        help_message; graceful_exit
+                        ;;
+                -b | --block)
+                        while [[ ! -z "${2}" ]]; do
+                                check_ip $2
+                                block_ip $2
+                                echo "$2 has been blocked."
+                                shift
+                        done
+                        ;;
+                -s | --show)
+                        iptables -S | awk ' /blockip / { print $4 }' | sort | uniq
+                        ;;	
+                -u | --unblock)	  
+                        while [ ! -z "${2}" ]; do
+                                check_ip $2
+                                unblock_ip $2
+                                echo "$2 has been unblocked."
+                                shift
+                        done
+                        ;;
+                -f | --file)
+                        for i in $(cat $2)
+                        do
+                                check_ip $i
+                                block_ip $i
+                                echo "$i has been blocked."
+                        done
+                        ;;
+                -a | --all)
+                        for i in $(iptables -S | awk ' /blockip / { print $4 }' | sort | uniq)
+                        do
+                                check_ip $i
+                                unblock_ip $i
+                                echo "$i has been unblocked."
+                        done
+                        ;;
+                -* | --*)
+                        usage
+                        error_exit "Unknown option $1" ;;
+                *)
+                        echo "Finished..." ;;
+        esac
+        shift
+done
+
+# Main logic
+graceful_exit
+
+
