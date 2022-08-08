@@ -1,5 +1,5 @@
 # BlockIp
- This script will block and unblock an IP address or CIDR range on the fly using iptables.
+ This script will block or unblock a group of up to 10 ip addresses, or CIDR range on the fly using iptables.
 
 ## Notes
 Blockip can only be run with root privledges, and should be used with care when blocking a CIDR range over ssh. Otherwise, it could render a server unreachable. The script is only meant to be used on the fly, and not be a permanent solution in terms of blocking ip addresses. For blocking a large range of ip addresses consider the companion applicaton to iptables "ipset."
